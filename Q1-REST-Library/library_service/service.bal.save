@@ -8,11 +8,29 @@ service /library on new http:Listener(9090) {
     }
 
     // GET /library/assets
-            resource function get assets(string? institution, string? site) returns Asset[] {
+    resource function get assets() returns Asset[] {
+    // GET /library/assets
+    // GET /library/assets?institution=...&site=...
+    resource function get assets(string? institution, string? site) returns Asset[] {
         if institution is () && site is () {
             return listAssets();
         }
         return filterAssets(institution, site);
+    }    // GET /library/assets
+    // GET /library/assets?institution=...&site=...
+    resource function get assets(string? institution, string? site) returns Asset[] {
+        if institution is () && site is () {
+            return listAssets();
+        }
+        return filterAssets(institution, site);
+    }    // GET /library/assets
+    // GET /library/assets?institution=...&site=...
+    resource function get assets(string? institution, string? site) returns Asset[] {
+        if institution is () && site is () {
+            return listAssets();
+        }
+        return filterAssets(institution, site);
+    }        return listAssets();
     }
 
     // GET /library/assets/{assetTag}

@@ -97,3 +97,24 @@ public function removeAsset(string assetTag) returns Asset|error {
     }
     return removed;
 }
+// Case-insensitive string compare - so "nust" matches "NUST".
+function equalsIgnoreCase(string a, string b) returns boolean {
+    return a.toLowerAscii() == b.toLowerAscii();
+}
+
+// Filter by institution and/or site. Both optional: passing neither returns
+// everything, so ONE function serves "all assets", "all NUST assets", and
+// "all NUST assets at the Innovation Lab".
+public function filterAssets(string? institution, string? site) returns Asset[] {
+    Asset[] result = [];
+    foreach Asset a in assetStore {
+        if institution is string && !equalsIgnoreCase(a.institution, institution) {
+            continue;
+        }
+        if site is string && !equalsIgnoreCase(a.site, site) {
+            continue;
+        }
+        result.push(a);
+    }
+    return result;
+}
