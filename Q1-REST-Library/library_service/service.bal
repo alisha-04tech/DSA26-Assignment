@@ -23,4 +23,46 @@ service /library on new http:Listener(9090) {
         }
         return found;
     }
+    // POST /library/assets
+    resource function post assets(Asset newAsset)
+            returns http:Created|http:Conflict {
+        Asset|error created = addAsset(newAsset);
+        if created is error {
+            http:Conflict conflictResponse = {
+                body: {message: "Asset already exists", details: created.message()}
+            };
+            return conflictResponse;
+        }
+        http:Created result = {
+            headers: {"Location": string `/library/assets/${created.assetTag}`},
+            body: created
+        };
+        return result;
+    }
+
+    // PUT /library/assets/{assetTag}
+    resource function put assets/[string assetTag](AssetUpdate patch)
+            returns Asset|http:NotFound {
+        Asset|error updated = updateAsset(assetTag, patch);
+        if updated is error {
+            http:NotFound notFound = {
+                body: {message: "Asset not found", details: updated.message()}
+            };
+            return notFound;
+        }
+        return updated;
+    }
+
+    // DELETE /library/assets/{assetTag}
+    resource function delete assets/[string assetTag]()
+            returns Asset|http:NotFound {
+        Asset|error removed = removeAsset(assetTag);
+        if removed is error {
+            http:NotFound notFound = {
+                body: {message: "Asset not found", details: removed.message()}
+            };
+            return notFound;
+        }
+        return removed;
+    }
 }

@@ -17,3 +17,20 @@ public type Asset record {|
     AssetStatus status = AVAILABLE;
     string dateAcquired;
 |};
+// Partial-update payload for PUT. Every field optional, so a caller sends
+// only what changed. assetTag is absent on purpose: identity lives in the
+// URL, never in the body.
+public type AssetUpdate record {|
+    string name?;
+    string description?;
+    string institution?;
+    string site?;
+    AssetStatus status?;
+    string dateAcquired?;
+|};
+
+// A consistent error shape, so the client only ever parses one format.
+public type ErrorResponse record {|
+    string message;
+    string details = "";
+|};
