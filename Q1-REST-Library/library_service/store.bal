@@ -7,6 +7,7 @@ import ballerina/time;
 // duplicate key where a map would silently overwrite - and silent overwrite
 // is the wrong behaviour for a create operation.
 table<Asset> key(assetTag) assetStore = table [];
+table<Institution> key(code) institutionStore = table [];
 
 // ============================================================================
 // ASSET OPERATIONS
@@ -249,6 +250,7 @@ public function returnAsset(string assetTag) returns Asset|error {
             string `Asset '${assetTag}' is not on loan (status ${a.status})`);
     }
     a.status = AVAILABLE;
+
     // Drop the LOAN/BOOKING schedules. The item is back, so it must stop
     // appearing on the overdue dashboard. MAINTENANCE and SERVICING
     // schedules stay - those are still genuinely due.
@@ -263,8 +265,217 @@ public function returnAsset(string assetTag) returns Asset|error {
 }
 
 // ============================================================================
+// COMPONENTS
+// ============================================================================
+
+public function addComponent(string assetTag, Component c) returns Component|error {
+    Asset? a = assetStore[assetTag];
+    if a is () {
+        return error NotFoundError(string `Asset '${assetTag}' not found`);
+    }
+    foreach Component existing in a.components {
+        if existing.compId == c.compId {
+            return error ConflictError(
+                string `Component '${c.compId}' already exists on '${assetTag}'`);
+        }
+    }
+    a.components.push(c);
+    return c;
+}
+
+public function removeComponent(string assetTag, string compId) returns Component|error {
+    Asset? a = assetStore[assetTag];
+    if a is () {
+        return error NotFoundError(string `Asset '${assetTag}' not found`);
+    }
+    int idx = 0;
+    foreach Component c in a.components {
+        if c.compId == compId {
+            return a.components.remove(idx);
+        }
+        idx += 1;
+    }
+    return error NotFoundError(string `Component '${compId}' not found on '${assetTag}'`);
+}
+
+// ============================================================================
+// WORK ORDERS
+// ============================================================================
+
+public function openWorkOrder(string assetTag, WorkOrder wo) returns WorkOrder|error {
+    Asset? a = assetStore[assetTag];
+    if a is () {
+        return error NotFoundError(string `Asset '${assetTag}' not found`);
+    }
+    foreach WorkOrder existing in a.workOrders {
+        if existing.orderId == wo.orderId {
+            return error ConflictError(string `Work order '${wo.orderId}' already exists`);
+        }
+    }
+    a.workOrders.push(wo);
+    // Raising a work order takes the asset out of service.
+    if a.status == AVAILABLE {
+        a.status = UNDER_MAINTENANCE;
+    }
+    return wo;
+}
+
+public function setWorkOrderStatus(string assetTag, string orderId, WorkOrderStatus st)
+        returns WorkOrder|error {
+    Asset? a = assetStore[assetTag];
+    if a is () {
+        return error NotFoundError(string `Asset '${assetTag}' not found`);
+    }
+    foreach WorkOrder wo in a.workOrders {
+        if wo.orderId == orderId {
+            wo.status = st;
+            if st == CLOSED {
+                // Back into service only when NOTHING is still open.
+                boolean anyOpen = false;
+                foreach WorkOrder w in a.workOrders {
+                    if w.status != CLOSED {
+                        anyOpen = true;
+                    }
+                }
+                if !anyOpen && a.status == UNDER_MAINTENANCE {
+                    a.status = AVAILABLE;
+                }
+            }
+            return wo;
+        }
+    }
+    return error NotFoundError(string `Work order '${orderId}' not found on '${assetTag}'`);
+}
+
+public function addTask(string assetTag, string orderId, Task t) returns Task|error {
+    Asset? a = assetStore[assetTag];
+    if a is () {
+        return error NotFoundError(string `Asset '${assetTag}' not found`);
+    }
+    foreach WorkOrder wo in a.workOrders {
+        if wo.orderId == orderId {
+            foreach Task existing in wo.tasks {
+                if existing.taskId == t.taskId {
+                    return error ConflictError(string `Task '${t.taskId}' already exists`);
+                }
+            }
+            wo.tasks.push(t);
+            return t;
+        }
+    }
+    return error NotFoundError(string `Work order '${orderId}' not found on '${assetTag}'`);
+}
+
+public function removeTask(string assetTag, string orderId, string taskId) returns Task|error {
+    Asset? a = assetStore[assetTag];
+    if a is () {
+        return error NotFoundError(string `Asset '${assetTag}' not found`);
+    }
+    foreach WorkOrder wo in a.workOrders {
+        if wo.orderId == orderId {
+            int idx = 0;
+            foreach Task t in wo.tasks {
+                if t.taskId == taskId {
+                    return wo.tasks.remove(idx);
+                }
+                idx += 1;
+            }
+            return error NotFoundError(string `Task '${taskId}' not found`);
+        }
+    }
+    return error NotFoundError(string `Work order '${orderId}' not found on '${assetTag}'`);
+}
+
+// ============================================================================
+// INSTITUTIONS
+// ============================================================================
+
+public function listInstitutions() returns Institution[] {
+    return institutionStore.toArray();
+}
+
+public function addInstitution(Institution inst) returns Institution|error {
+    if institutionStore.hasKey(inst.code) {
+        return error ConflictError(string `Institution '${inst.code}' already exists`);
+    }
+    institutionStore.add(inst);
+    return inst;
+}
+
+public function updateInstitution(string code, InstitutionUpdate patch)
+        returns Institution|error {
+    Institution? inst = institutionStore[code];
+    if inst is () {
+        return error NotFoundError(string `Institution '${code}' not found`);
+    }
+    string? nm = patch.name;
+    if nm is string {
+        inst.name = nm;
+    }
+    string[]? sites = patch.sites;
+    if sites is string[] {
+        inst.sites = sites;
+    }
+    return inst;
+}
+
+// REFERENTIAL INTEGRITY: refuse to delete an institution that still owns
+// assets. Silently orphaning rows is how distributed systems rot.
+public function removeInstitution(string code) returns Institution|error {
+    Institution? inst = institutionStore[code];
+    if inst is () {
+        return error NotFoundError(string `Institution '${code}' not found`);
+    }
+    int owned = 0;
+    foreach Asset a in assetStore {
+        if equalsIgnoreCase(a.institution, code) || equalsIgnoreCase(a.institution, inst.name) {
+            owned += 1;
+        }
+    }
+    if owned > 0 {
+        return error ConflictError(
+            string `Institution '${code}' still owns ${owned} asset(s); reassign or delete them first`);
+    }
+    return institutionStore.remove(code);
+}
+
+// Assets belonging to an institution, matched on EITHER code or full name.
+public function assetsForInstitution(string code, string? site) returns Asset[]|error {
+    Institution? inst = institutionStore[code];
+    if inst is () {
+        return error NotFoundError(string `Institution '${code}' not found`);
+    }
+    Asset[] result = [];
+    foreach Asset a in assetStore {
+        boolean matches = equalsIgnoreCase(a.institution, code)
+            || equalsIgnoreCase(a.institution, inst.name);
+        if !matches {
+            continue;
+        }
+        if site is string && !equalsIgnoreCase(a.site, site) {
+            continue;
+        }
+        result.push(a);
+    }
+    return result;
+}
+
+// ============================================================================
 // SEED DATA
 // ============================================================================
+
+public function seedInstitutions() {
+    institutionStore.add({
+        code: "NUST",
+        name: "Namibia University of Science and Technology",
+        sites: ["Main Campus - Innovation Lab", "Main Campus - Library", "Ongwediva Campus"]
+    });
+    institutionStore.add({
+        code: "UNAM",
+        name: "University of Namibia",
+        sites: ["Main Campus", "Oshakati Campus"]
+    });
+}
 
 public function seed() {
     assetStore.add({
@@ -275,6 +486,13 @@ public function seed() {
         site: "Main Campus - Innovation Lab",
         status: AVAILABLE,
         dateAcquired: "2024-03-10",
+        components: [
+            {
+                compId: "C101",
+                name: "High-Torque Stepper Motor",
+                description: "Main motor for X-axis movement."
+            }
+        ],
         schedules: [
             {
                 scheduleId: "SCH-882",
