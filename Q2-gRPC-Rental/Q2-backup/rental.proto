@@ -1,0 +1,285 @@
+// =============================================================================
+// rental.proto  -  Service contract for the Ministry of Tourism
+//                  Rental Accommodation System (DSA612S Assignment 1, Q2)
+//
+// THIS FILE IS THE INTERFACE DEFINITION LANGUAGE (IDL) CONTRACT.
+//
+// Why it matters (Week 3, "Service Contracts and IDLs"):
+// In Question 1 the client and server each hand-wrote their own copy of the
+// data model, and nothing stopped them drifting apart. Here, ONE file
+// generates BOTH the client stub and the server skeleton:
+//
+//     bal grpc --mode service --input rental.proto --output rental_server
+//     bal grpc --mode client  --input rental.proto --output rental_client
+//
+// so a field rename becomes a COMPILE error on both sides instead of a
+// runtime surprise. That is the whole argument for an IDL.
+//
+// Wire format is Protocol Buffers - BINARY, not JSON. Smaller messages,
+// faster marshalling, and field NUMBERS (not names) travel on the wire, which
+// is what makes the format forwards- and backwards-compatible. Adding a new
+// field with a new number never breaks an old peer; that is why the numbers
+// below are never reused.
+// =============================================================================
+
+syntax = "proto3";
+
+package rental;
+
+// =============================================================================
+// SERVICE
+// =============================================================================
+service RentalService {
+
+    // --- Simple (unary) RPC ---------------------------------------------
+    // A Host registers a new listing. Server allocates the property_id.
+    rpc add_property (AddPropertyRequest) returns (AddPropertyResponse);
+
+    // --- CLIENT-SIDE STREAMING ------------------------------------------
+    // The client pushes many UserProfile messages over ONE connection and
+    // the server replies exactly once, after the stream completes.
+    // Chosen because bulk-loading profiles is a batch job: one connection
+    // instead of N amortises the TCP/TLS "cold start" cost from Week 3.
+    rpc create_users (stream UserProfile) returns (CreateUsersResponse);
+
+    // --- Simple RPC -----------------------------------------------------
+    rpc update_property (UpdatePropertyRequest) returns (PropertyResponse);
+
+    // --- Simple RPC -----------------------------------------------------
+    // Deletes a listing; replies with the remaining available properties in
+    // that Host's region.
+    rpc remove_property (RemovePropertyRequest) returns (PropertyList);
+
+    // --- SERVER-SIDE STREAMING ------------------------------------------
+    // The server streams matching properties one at a time rather than
+    // building one huge response. Server memory stays flat and the client
+    // can render result 1 before result N has been computed.
+    rpc list_available_properties (ListAvailableRequest) returns (stream Property);
+
+    // --- Simple RPC -----------------------------------------------------
+    rpc search_property (SearchPropertyRequest) returns (SearchPropertyResponse);
+
+    // --- Simple RPC -----------------------------------------------------
+    // Validates the dates and puts the request in a temporary per-guest
+    // booking cart. Nothing is committed yet.
+    rpc book_property (BookPropertyRequest) returns (BookPropertyResponse);
+
+    // --- Simple RPC -----------------------------------------------------
+    // Commits the cart: re-checks availability, computes cost, clears cart.
+    rpc confirm_booking (ConfirmBookingRequest) returns (BookingConfirmation);
+}
+
+// =============================================================================
+// ENUMS
+// =============================================================================
+// proto3 requires the first enumerator to be 0, and it is the default when a
+// field is absent. Naming each zero value *_UNSPECIFIED makes "caller did not
+// set this" distinguishable from a real value - which is what lets the update
+// RPC treat UNSPECIFIED as "leave unchanged".
+// NOTE: enum value names share the PACKAGE namespace in protobuf, so every
+// name here must be unique across ALL enums in package `rental`.
+
+enum PropertyStatus {
+    PROPERTY_STATUS_UNSPECIFIED = 0;
+    AVAILABLE = 1;      // listed and bookable
+    UNAVAILABLE = 2;    // delisted by the host
+    MAINTENANCE = 3;    // temporarily out of service
+}
+
+enum PropertyType {
+    PROPERTY_TYPE_UNSPECIFIED = 0;
+    APARTMENT = 1;
+    HOUSE = 2;
+    GUEST_HOUSE = 3;
+    LODGE = 4;
+    CAMPSITE = 5;
+}
+
+enum UserRole {
+    USER_ROLE_UNSPECIFIED = 0;
+    HOST = 1;
+    GUEST = 2;
+}
+
+// =============================================================================
+// CORE MESSAGES
+// =============================================================================
+
+message Property {
+    string property_id = 1;         // server-allocated, e.g. "PROP-0007"
+    string host_id = 2;
+    string name = 3;
+    string location = 4;            // region or town, e.g. "Swakopmund"
+    PropertyType property_type = 5;
+    double price_per_night = 6;     // NAD
+    PropertyStatus status = 7;
+    int32 max_guests = 8;
+    string description = 9;
+}
+
+message UserProfile {
+    string user_id = 1;
+    string name = 2;
+    string email = 3;
+    UserRole role = 4;
+}
+
+message Booking {
+    string booking_id = 1;
+    string guest_id = 2;
+    string property_id = 3;
+    string property_name = 4;
+    string check_in = 5;            // "YYYY-MM-DD", inclusive
+    string check_out = 6;           // "YYYY-MM-DD", EXCLUSIVE
+    int32 nights = 7;
+    double price_per_night = 8;
+    double total_cost = 9;
+    string confirmed_at = 10;
+}
+
+// =============================================================================
+// add_property
+// =============================================================================
+message AddPropertyRequest {
+    string host_id = 1;
+    string name = 2;
+    string location = 3;
+    PropertyType property_type = 4;
+    double price_per_night = 5;
+    PropertyStatus status = 6;      // UNSPECIFIED defaults to AVAILABLE
+    int32 max_guests = 7;
+    string description = 8;
+}
+
+message AddPropertyResponse {
+    bool success = 1;
+    string property_id = 2;
+    string message = 3;
+}
+
+// =============================================================================
+// create_users  (client-side streaming)
+// =============================================================================
+// One summary for the whole batch. Per-record failures are reported in
+// `errors` rather than aborting the stream - one malformed profile must not
+// discard the other 499. Partial failure is normal in distributed systems.
+message CreateUsersResponse {
+    bool success = 1;
+    int32 created_count = 2;
+    int32 rejected_count = 3;
+    repeated string errors = 4;
+    string message = 5;
+}
+
+// =============================================================================
+// update_property
+// =============================================================================
+// DESIGN DECISION worth defending:
+// proto3 has no natural "field was not sent" for scalars - an unset string is
+// "" and an unset double is 0. Two ways round it:
+//   (a) the proto3 `optional` keyword, which adds explicit presence tracking
+//   (b) SENTINEL VALUES: treat "" / 0 / *_UNSPECIFIED as "leave unchanged"
+// We chose (b) for portability across protobuf tool versions, and because a
+// zero price or blank name is not a meaningful update anyway. The cost: this
+// API cannot express "set the description to empty string". Acceptable here,
+// but know the trade-off - you will be asked.
+message UpdatePropertyRequest {
+    string property_id = 1;         // required - the key
+    string host_id = 2;             // required - ownership check
+    string name = 3;                // "" = unchanged
+    string location = 4;            // "" = unchanged
+    double price_per_night = 5;     // 0 = unchanged
+    PropertyStatus status = 6;      // UNSPECIFIED = unchanged
+    int32 max_guests = 7;           // 0 = unchanged
+    string description = 8;         // "" = unchanged
+}
+
+message PropertyResponse {
+    bool success = 1;
+    string message = 2;
+    Property property = 3;
+}
+
+// =============================================================================
+// remove_property
+// =============================================================================
+message RemovePropertyRequest {
+    string property_id = 1;
+    string host_id = 2;             // only the owning host may delete
+}
+
+message PropertyList {
+    repeated Property properties = 1;
+    string region = 2;
+    int32 count = 3;
+    string message = 4;
+}
+
+// =============================================================================
+// list_available_properties  (server-side streaming)
+// =============================================================================
+message ListAvailableRequest {
+    string location = 1;            // "" = any region
+    double min_price = 2;           // 0 = no lower bound
+    double max_price = 3;           // 0 = no upper bound
+    int32 min_guests = 4;           // 0 = no constraint
+    string check_in = 5;            // optional: also exclude date clashes
+    string check_out = 6;
+}
+
+// =============================================================================
+// search_property
+// =============================================================================
+message SearchPropertyRequest {
+    string property_id = 1;
+}
+
+message SearchPropertyResponse {
+    bool found = 1;
+    bool available = 2;
+    string status_message = 3;      // "Available" | "Not Available" | "Not Found"
+    Property property = 4;
+}
+
+// =============================================================================
+// book_property   (adds to the cart - commits nothing)
+// =============================================================================
+message BookPropertyRequest {
+    string guest_id = 1;
+    string property_id = 2;
+    string check_in = 3;            // "YYYY-MM-DD"
+    string check_out = 4;           // must be AFTER check_in
+    int32 guests = 5;
+}
+
+message BookPropertyResponse {
+    bool accepted = 1;
+    string cart_item_id = 2;
+    string message = 3;
+    int32 nights = 4;
+    double estimated_total = 5;     // "estimated": price is fixed at confirm
+}
+
+// =============================================================================
+// confirm_booking  (commits the cart)
+// =============================================================================
+message ConfirmBookingRequest {
+    string guest_id = 1;
+    string cart_item_id = 2;        // "" = confirm the guest's entire cart
+
+    // IDEMPOTENCY KEY (Week 3, "The Importance of Idempotency").
+    // confirm_booking is an unsafe, state-changing operation. If the reply is
+    // lost and the client retries, this key lets the server recognise the
+    // repeat and return the ORIGINAL confirmation instead of double-booking.
+    // It is what upgrades an at-least-once transport into effectively
+    // exactly-once business behaviour.
+    string idempotency_key = 3;
+}
+
+message BookingConfirmation {
+    bool confirmed = 1;
+    repeated Booking bookings = 2;
+    double total_cost = 3;
+    string message = 4;
+    bool replayed = 5;              // true = this was a retry we recognised
+}
