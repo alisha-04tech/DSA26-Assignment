@@ -1,25 +1,7 @@
-// ============================================================================
-// store.bal  -  State + business rules for the Rental Accommodation System
-//
-// Contains NO gRPC types: no grpc:Error, no caller objects, no streams. Same
-// split as Question 1 - the transport is an adapter, the rules live here.
-// Both questions therefore share one architecture and only the adapter
-// differs, which is the practical form of the Week 1 argument that middleware
-// exists to mask heterogeneity.
-//
-// The message records (Property, UserProfile, Booking, ...) come from the
-// GENERATED rental_pb.bal - we never hand-write them. That is the IDL payoff.
-//
-// Note: proto `double` maps to Ballerina `float`, not `decimal`.
-// ============================================================================
-
 import ballerina/time;
 
-// ---------------------------------------------------------------------------
-// TYPES THAT ARE *NOT* ON THE WIRE
-// ---------------------------------------------------------------------------
-// A cart item is server-side scratch state. It never leaves the process as a
-// message, so it is a plain Ballerina record, not a protobuf message.
+// Server-side scratch state - never sent over the wire, so it's a plain
+// record rather than a protobuf message.
 public type CartItem record {|
     string cartItemId;
     string guestId;
@@ -33,21 +15,18 @@ public type NotFoundError distinct error;
 public type ValidationError distinct error;
 public type ConflictError distinct error;
 
-// ---------------------------------------------------------------------------
-// STATE
-// ---------------------------------------------------------------------------
 map<Property> propertyStore = {};
 map<UserProfile> userStore = {};
-map<CartItem[]> cartStore = {};                 // guest_id -> pending items
-Booking[] bookingStore = [];                    // confirmed bookings
-map<BookingConfirmation> replayCache = {};      // idempotency_key -> reply
+map<CartItem[]> cartStore = {};
+Booking[] bookingStore = [];
+map<BookingConfirmation> replayCache = {};
 int propertySeq = 0;
 int bookingSeq = 0;
 int cartSeq = 0;
 
-// ---------------------------------------------------------------------------
-// DATE HELPERS  (same algorithm as Q1)
-// ---------------------------------------------------------------------------
+// --- dates ------------------------------------------------------------------
+
+// Days since 1970-01-01, so dates can be compared and subtracted as integers.
 function daysFromCivil(int y, int m, int d) returns int {
     int yy = m <= 2 ? y - 1 : y;
     int era = yy / 400;
@@ -76,16 +55,11 @@ function pad2(int v) returns string {
 
 public function nowIso() returns string {
     time:Civil c = time:utcToCivil(time:utcNow());
-    // In this Ballerina release time:Civil declares hour/minute as required
-    // int fields, so no nil-handling is needed.
     return string `${c.year}-${pad2(c.month)}-${pad2(c.day)}T${pad2(c.hour)}:${pad2(c.minute)}Z`;
 }
 
-// THE OVERLAP RULE.
-// Intervals are HALF-OPEN: [checkIn, checkOut). The checkout day is free for
-// the next guest, which is how real hotels work. Two stays clash iff
-//     aIn < bOut  AND  bIn < aOut
-// Back-to-back bookings (A checks out 14th, B checks in 14th) do NOT clash.
+// Stays are half-open [checkIn, checkOut), so the checkout day is free for the
+// next guest and back-to-back bookings don't clash.
 public function overlaps(int aIn, int aOut, int bIn, int bOut) returns boolean {
     return aIn < bOut && bIn < aOut;
 }
@@ -98,9 +72,7 @@ function padId(int n) returns string {
     return s;
 }
 
-// ---------------------------------------------------------------------------
-// PROPERTIES
-// ---------------------------------------------------------------------------
+// --- properties -------------------------------------------------------------
 
 public function addProperty(AddPropertyRequest req) returns Property|error {
     if req.host_id.trim() == "" {
@@ -126,7 +98,6 @@ public function addProperty(AddPropertyRequest req) returns Property|error {
         location: req.location,
         property_type: req.property_type,
         price_per_night: req.price_per_night,
-        // An unset status arrives as *_UNSPECIFIED; default it to AVAILABLE.
         status: req.status == PROPERTY_STATUS_UNSPECIFIED ? AVAILABLE : req.status,
         max_guests: req.max_guests <= 0 ? 2 : req.max_guests,
         description: req.description
@@ -139,16 +110,12 @@ public function getProperty(string propertyId) returns Property? {
     return propertyStore[propertyId];
 }
 
-// Sentinel-based partial update - see the design note in rental.proto.
 public function updateProperty(UpdatePropertyRequest req) returns Property|error {
     Property? existing = propertyStore[req.property_id];
     if existing is () {
         return error NotFoundError(string `Property '${req.property_id}' not found`);
     }
-    // OWNERSHIP CHECK: a host may only edit their own listing. Without this,
-    // any client that guesses a property_id could reprice someone else's
-    // house. Authorisation is a distributed-systems concern, not an
-    // afterthought (Week 1: middleware and security).
+    // A host may only edit their own listing.
     if existing.host_id != req.host_id {
         return error ConflictError(
             string `Host '${req.host_id}' does not own property '${req.property_id}'`);
@@ -174,8 +141,7 @@ public function updateProperty(UpdatePropertyRequest req) returns Property|error
     return existing;
 }
 
-// Removing a listing returns the remaining AVAILABLE properties in the same
-// region, as the brief specifies.
+// Returns the remaining available properties in the same region.
 public function removeProperty(string propertyId, string hostId)
         returns [Property[], string]|error {
     Property? existing = propertyStore[propertyId];
@@ -189,9 +155,7 @@ public function removeProperty(string propertyId, string hostId)
     string region = existing.location;
     _ = propertyStore.remove(propertyId);
 
-    // Any pending cart items pointing at the dead listing are now garbage -
-    // drop them so a guest cannot confirm a booking for a property that no
-    // longer exists.
+    // Drop cart items pointing at the deleted listing.
     purgeCartItemsFor(propertyId);
 
     Property[] remaining = listAvailable({
@@ -218,8 +182,7 @@ function purgeCartItemsFor(string propertyId) {
     }
 }
 
-// The read model behind list_available_properties. Every filter optional;
-// a zero / empty value means "no constraint".
+// Zero or empty filter values mean "no constraint".
 public function listAvailable(ListAvailableRequest req) returns Property[] {
     int inDay = -1;
     int outDay = -1;
@@ -253,7 +216,6 @@ public function listAvailable(ListAvailableRequest req) returns Property[] {
         result.push(p);
     }
 
-    // If the guest supplied dates, also drop anything already booked then.
     if inDay >= 0 {
         Property[] free = [];
         foreach Property p in result {
@@ -266,7 +228,6 @@ public function listAvailable(ListAvailableRequest req) returns Property[] {
     return result;
 }
 
-// Does this property already have a CONFIRMED booking clashing with the range?
 public function hasClash(string propertyId, int inDay, int outDay) returns boolean {
     foreach Booking b in bookingStore {
         if b.property_id != propertyId {
@@ -281,12 +242,9 @@ public function hasClash(string propertyId, int inDay, int outDay) returns boole
     return false;
 }
 
-// ---------------------------------------------------------------------------
-// USERS  (populated by the client-streaming RPC)
-// ---------------------------------------------------------------------------
-// Returns () on success, or a human-readable reason for rejection. We validate
-// per record rather than aborting the whole stream: one bad profile must not
-// discard the good ones.
+// --- users ------------------------------------------------------------------
+
+// Returns a rejection reason, or nil on success.
 public function addUser(UserProfile u) returns string? {
     if u.user_id.trim() == "" {
         return "user_id is required";
@@ -311,9 +269,8 @@ public function userCount() returns int {
     return userStore.length();
 }
 
-// ---------------------------------------------------------------------------
-// BOOKING CART  (book_property)
-// ---------------------------------------------------------------------------
+// --- booking cart -----------------------------------------------------------
+
 public function addToCart(BookPropertyRequest req) returns [CartItem, int, float]|error {
     if req.guest_id.trim() == "" {
         return error ValidationError("guest_id is required");
@@ -321,7 +278,6 @@ public function addToCart(BookPropertyRequest req) returns [CartItem, int, float
     int inDay = check toDayNumber(req.check_in);
     int outDay = check toDayNumber(req.check_out);
 
-    // The validation the brief explicitly asks for.
     if outDay <= inDay {
         return error ValidationError(
             string `check_out (${req.check_out}) must be after check_in (${req.check_in})`);
@@ -339,19 +295,16 @@ public function addToCart(BookPropertyRequest req) returns [CartItem, int, float
         return error ValidationError(
             string `Property sleeps ${p.max_guests}, requested ${req.guests}`);
     }
-    // Early clash check. ADVISORY only - the authoritative check runs again
-    // inside confirm_booking, because another guest may confirm in between.
-    // Checking twice is not redundant: it is the difference between a helpful
-    // error now and a correct system later.
+    // Advisory check only - confirm_booking re-checks, since another guest may
+    // confirm between the two calls.
     if hasClash(req.property_id, inDay, outDay) {
         return error ConflictError(
             string `Property '${req.property_id}' is already booked for those dates`);
     }
 
     cartSeq += 1;
-    string itemId = string `CART-${padId(cartSeq)}`;
     CartItem item = {
-        cartItemId: itemId,
+        cartItemId: string `CART-${padId(cartSeq)}`,
         guestId: req.guest_id,
         propertyId: req.property_id,
         checkIn: req.check_in,
@@ -363,20 +316,17 @@ public function addToCart(BookPropertyRequest req) returns [CartItem, int, float
     cartStore[req.guest_id] = existing;
 
     int nights = outDay - inDay;
-    float estimate = <float>nights * p.price_per_night;
-    return [item, nights, estimate];
+    return [item, nights, <float>nights * p.price_per_night];
 }
 
 public function getCart(string guestId) returns CartItem[] {
     return cartStore.hasKey(guestId) ? cartStore.get(guestId) : [];
 }
 
-// ---------------------------------------------------------------------------
-// CONFIRM  (confirm_booking)
-// ---------------------------------------------------------------------------
-// Look up a previous reply for this idempotency key. If we find one, the
-// client is retrying a call we already completed - return the SAME answer
-// instead of booking again. (Week 3: at-most-once via duplicate filtering.)
+// --- confirm ----------------------------------------------------------------
+
+// If we've already answered this idempotency key, the client is retrying a
+// call we completed - return the original answer instead of booking again.
 public function replayIfSeen(string key) returns BookingConfirmation? {
     if key.trim() == "" {
         return ();
@@ -399,7 +349,6 @@ public function confirmBooking(string guestId, string cartItemId, string idempot
         return error NotFoundError(string `Guest '${guestId}' has an empty booking cart`);
     }
 
-    // Either one specific item, or the whole cart.
     CartItem[] toConfirm = [];
     if cartItemId.trim() == "" {
         toConfirm = cart;
@@ -418,9 +367,8 @@ public function confirmBooking(string guestId, string cartItemId, string idempot
     float grandTotal = 0.0;
     string stamp = nowIso();
 
-    // Validate EVERYTHING before committing ANYTHING. If the second of three
-    // items clashes we must not leave the first one booked - that would be a
-    // torn, half-applied transaction. Build the full list first, commit last.
+    // Validate everything before writing anything, so a failure partway
+    // through can't leave some items booked and others not.
     foreach CartItem it in toConfirm {
         Property? p = getProperty(it.propertyId);
         if p is () {
@@ -433,12 +381,11 @@ public function confirmBooking(string guestId, string cartItemId, string idempot
         int inDay = check toDayNumber(it.checkIn);
         int outDay = check toDayNumber(it.checkOut);
 
-        // AUTHORITATIVE availability check.
         if hasClash(it.propertyId, inDay, outDay) {
             return error ConflictError(
                 string `Property '${p.name}' was booked by someone else for ${it.checkIn} to ${it.checkOut}`);
         }
-        // Also guard against two items in the SAME cart clashing with each other.
+        // Two items in the same cart could also clash with each other.
         foreach Booking b in created {
             if b.property_id == it.propertyId {
                 int bi = check toDayNumber(b.check_in);
@@ -469,7 +416,6 @@ public function confirmBooking(string guestId, string cartItemId, string idempot
         });
     }
 
-    // COMMIT: persist the bookings and clear exactly what we confirmed.
     foreach Booking b in created {
         bookingStore.push(b);
     }
@@ -504,9 +450,8 @@ function clearCartItems(string guestId, CartItem[] consumed) {
     cartStore[guestId] = kept;
 }
 
-// ---------------------------------------------------------------------------
-// SEED - Namibian listings so the demo has data immediately.
-// ---------------------------------------------------------------------------
+// --- seed -------------------------------------------------------------------
+
 public function seed() {
     AddPropertyRequest[] samples = [
         {
@@ -536,10 +481,6 @@ public function seed() {
         }
     ];
     foreach AddPropertyRequest r in samples {
-        // A wildcard `_` only binds values of type `any`, and `Property|error`
-        // is not - errors are deliberately outside `any` so they can't be
-        // silently discarded. Bind it properly and fail loudly if the
-        // hard-coded seed data is ever wrong.
         Property|error added = addProperty(r);
         if added is error {
             panic added;
@@ -553,8 +494,6 @@ public function seed() {
         {user_id: "G-001", name: "Tuli Haufiku", email: "tuli@example.na", role: GUEST}
     ];
     foreach UserProfile u in people {
-        // addUser returns a rejection reason or nil. `string?` IS within
-        // `any`, so a wildcard is legal here.
         string? _ = addUser(u);
     }
 }
