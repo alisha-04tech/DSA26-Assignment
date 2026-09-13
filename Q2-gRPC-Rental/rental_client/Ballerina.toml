@@ -1,8 +1,0 @@
-[package]
-org = "oskar"
-name = "rental_client"
-version = "0.1.0"
-distribution = "2201.12.8"
-
-[build-options]
-observabilityIncluded = true
