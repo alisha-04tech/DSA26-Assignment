@@ -1,0 +1,62 @@
+{
+  "last_build_time": 1789120229131,
+  "last_update_time": 1789120229131,
+  "last_bal_toml_update_time": 1786564919000,
+  "distribution_version": "2201.13.5",
+  "last_modified_time": {
+    "Library_clients": 1786613989000
+  },
+  "last_build_options": {
+    "testReport": false,
+    "codeCoverage": false,
+    "skipTests": true,
+    "compilationOptions": {
+      "experimental": false,
+      "cloud": "",
+      "dumpGraph": false,
+      "dumpRawGraphs": false
+    }
+  },
+  "src_meta_info": [
+    {
+      "file": "C:\\Users\\elite\\OneDrive\\Documents\\School\\Semester 2\\Distributed Systems\\DSA_LibrarySystem\\Library_clients\\Ballerina.toml",
+      "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "lastModifiedTime": 1786564919000
+    },
+    {
+      "file": "C:\\Users\\elite\\OneDrive\\Documents\\School\\Semester 2\\Distributed Systems\\DSA_LibrarySystem\\Library_clients\\main.bal",
+      "hash": "c23fe87fbf82da4f88acb3295283ecafe9aecf4042a5fedd9ee02cb1b2d4df81",
+      "size": 21506,
+      "lastModifiedTime": 1786613989000
+    },
+    {
+      "file": "C:\\Users\\elite\\OneDrive\\Documents\\School\\Semester 2\\Distributed Systems\\DSA_LibrarySystem\\Library_clients\\models.bal",
+      "hash": "941cb8d39d066a79909d48c96f69d64e2961dec9104d66c68758eb427522b772",
+      "size": 1064,
+      "lastModifiedTime": 1786576160000
+    }
+  ],
+  "target_exec_meta_info": {
+    "file": "C:\\Users\\elite\\OneDrive\\Documents\\School\\Semester 2\\Distributed Systems\\DSA_LibrarySystem\\Library_clients\\target\\backup\\bin\\Library_clients.jar",
+    "hash": "dcdf1ac93890f65a19f4689b1d5366cc5ac5af3696fe38e09f2756ed4c1cd435",
+    "size": 47684901,
+    "lastModifiedTime": 1789120231339
+  },
+  "settings_meta_info": {
+    "file": "C:\\Users\\elite\\.ballerina\\Settings.toml",
+    "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "size": 0,
+    "lastModifiedTime": 1788402548823
+  },
+  "ballerina_toml_meta_info": {
+    "file": "C:\\Users\\elite\\OneDrive\\Documents\\School\\Semester 2\\Distributed Systems\\DSA_LibrarySystem\\Library_clients\\Ballerina.toml",
+    "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "size": 0,
+    "lastModifiedTime": 1786564919000
+  },
+  "imports": [
+    "ballerina/http",
+    "ballerina/io"
+  ]
+}
